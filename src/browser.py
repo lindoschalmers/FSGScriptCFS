@@ -74,22 +74,24 @@ class FSGBrowser:
                 const idxMap = {
                     assembly: findIdx(['assembly', 'asm', 'assy']),
                     part: findIdx(['part', 'name', 'designation', 'description']),
+                    comments: findIdx(['comments', 'comment', 'notes']),
                 };
 
                 // 2. Scrape all rows
                 const rows = table.querySelectorAll('tbody tr');
                 rows.forEach(tr => {
                     if (tr.classList.contains('empty') || tr.innerText.includes('No data')) return;
-                    
+
                     const cells = tr.querySelectorAll('td');
                     const obj = {};
-                    
+
                     // ID format: 'DT_12345'
                     if (tr.id) obj['id'] = tr.id;
-                    
+
                     if (idxMap.assembly !== -1 && cells[idxMap.assembly]) obj['assembly'] = cells[idxMap.assembly].innerText.trim();
                     if (idxMap.part !== -1 && cells[idxMap.part]) obj['part'] = cells[idxMap.part].innerText.trim();
-                    
+                    if (idxMap.comments !== -1 && cells[idxMap.comments]) obj['comments'] = cells[idxMap.comments].innerText.trim();
+
                     results.push(obj);
                 });
                 return results;
@@ -130,4 +132,14 @@ class FSGBrowser:
             self.page.locator("#DTE_Field_quantity").fill(item['quantity'])
         
         self.page.get_by_text("Create", exact=True).click()
-        self.page.wait_for_selector(".DTE_Action_Create", state="hidden", timeout=10000)
+        try:
+            self.page.wait_for_selector(".DTE_Action_Create", state="hidden", timeout=10000)
+        except Exception:
+            # Modal didn't close — server likely rejected the form (validation error).
+            # Force-dismiss it so the next part isn't blocked by the overlay.
+            try:
+                self.page.keyboard.press("Escape")
+                self.page.wait_for_selector(".DTE_Action_Create", state="hidden", timeout=3000)
+            except Exception:
+                pass
+            raise

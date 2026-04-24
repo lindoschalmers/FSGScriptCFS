@@ -1,5 +1,7 @@
 import os
+import re
 import glob
+import warnings
 import pandas as pd
 import openpyxl
 from typing import List, Dict, Any, Optional, Tuple
@@ -97,7 +99,7 @@ class ExcelProcessor:
                 return skip
         return None
 
-    def process_file(self, filepath: str, run_system: str = "ALL") -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
+    def process_file(self, filepath: str, run_system: str = "ALL", system_norm_map: dict = None) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
         stats = {
             "total_excel_rows": 0,
             "empty_rows": 0,
@@ -107,7 +109,9 @@ class ExcelProcessor:
             "valid_parts": 0
         }
         
-        wb = openpyxl.load_workbook(filepath, data_only=True)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
+            wb = openpyxl.load_workbook(filepath, data_only=True)
         sheet = wb.active
         df = pd.read_excel(filepath)
         stats["total_excel_rows"] = len(df)
@@ -125,7 +129,7 @@ class ExcelProcessor:
             "assembly": find_col(["assembly", "asm", "assy"]),
             "part": find_col(["part", "part name", "designation"]),
             "quantity": find_col(["part_quantity", "quantity", "qty", "amount"]),
-            "makebuy": find_col(["make o. buy", "m/b", "makebuy"]),
+            "makebuy": find_col(["make o. buy", "m/b", "makebuy", "make/buy"]),
             "comments": find_col(["part_comments", "comments", "notes", "comment"])
         }
 
@@ -135,10 +139,21 @@ class ExcelProcessor:
         filtered = []
         for idx, row in df.iterrows():
             excel_row = idx + 2
-            sys_val = str(row.iloc[col_map["system"]] if col_map["system"] is not None else "").strip().upper()
+            sys_raw = str(row.iloc[col_map["system"]] if col_map["system"] is not None else "").strip()
+            if system_norm_map:
+                norm = re.sub(r"\W+", "", sys_raw.lower())
+                sys_val = system_norm_map.get(norm, sys_raw).upper()
+            else:
+                sys_val = sys_raw.upper()
             part_val = str(row.iloc[col_map["part"]] if col_map["part"] is not None else "").strip()
-            
+
+            # Skip rows with empty/invalid values
             if not sys_val or sys_val == "NAN" or not part_val or part_val == "NAN":
+                stats["empty_rows"] += 1
+                continue
+
+            # Skip rows whose system didn't resolve to a known 2-char code
+            if system_norm_map and sys_val not in system_norm_map.values():
                 stats["empty_rows"] += 1
                 continue
 

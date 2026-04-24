@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import random
 import questionary
@@ -38,15 +39,35 @@ class BOMAutomation:
 
         # 2. System Selection
         import pandas as pd
+
+        # Build reverse map: normalized full name -> 2-char code
+        # e.g. "brakesystem" -> "BR", "drivetrain" -> "DT"
+        system_norm_map = {}
+        for code, label in self.matcher.SYSTEM_MAP.items():
+            parts_label = label.split(" - ", 1)
+            name_part = parts_label[1] if len(parts_label) > 1 else parts_label[0]
+            system_norm_map[re.sub(r"\W+", "", name_part.lower())] = code
+            system_norm_map[re.sub(r"\W+", "", label.lower())] = code
+
         df_temp = pd.read_excel(filepath)
         df_temp.columns = [str(c).strip().lower() for c in df_temp.columns]
-        
+
         if "system" not in df_temp.columns:
             self.ui.log("Excel file missing 'system' column.", "ERROR")
             return
-            
-        systems = [str(s).upper() for s in df_temp["system"].dropna().unique() if len(str(s)) == 2]
-        
+
+        seen_codes = set()
+        systems = []
+        for s in df_temp["system"].dropna().unique():
+            s_str = str(s).strip()
+            if not s_str:
+                continue
+            norm = re.sub(r"\W+", "", s_str.lower())
+            code = system_norm_map.get(norm, s_str.upper())
+            if len(code) == 2 and code in self.matcher.SYSTEM_MAP and code not in seen_codes:
+                systems.append(code)
+                seen_codes.add(code)
+
         run_system = self.config.default_system
         if not run_system or run_system not in systems:
             choices = [questionary.Choice(f"{s} - {self.matcher.get_system_label(s)}", s) for s in systems]
@@ -57,7 +78,7 @@ class BOMAutomation:
             return
 
         # 3. Filter Rows
-        parts, stats = self.excel.process_file(filepath, run_system)
+        parts, stats = self.excel.process_file(filepath, run_system, system_norm_map)
         
         # Detailed logging of Excel scan
         self.ui.log(f"Excel Scan Summary for '{os.path.basename(filepath)}':")
@@ -95,7 +116,9 @@ class BOMAutomation:
             # Match and Whitelist
             runtime_allowed = []
             if not self.config.allowed_assemblies:
-                runtime_allowed = self.ui.prompt_ask(questionary.checkbox("Select assemblies to process:", choices=site_options))
+                self.ui.log("Use SPACE to toggle assemblies, ENTER to confirm (all pre-selected).")
+                choices = [questionary.Choice(title=opt, checked=True) for opt in site_options]
+                runtime_allowed = self.ui.prompt_ask(questionary.checkbox("Select assemblies to process:", choices=choices))
                 if not runtime_allowed:
                     self.ui.log("No assemblies selected. Exiting.")
                     return
@@ -142,20 +165,25 @@ class BOMAutomation:
                     # we compare primarily based on assembly and part name.
                     part_norm = self.matcher._normalize(part['part'])
                     asm_norm = self.matcher._normalize(part['assembly'])
-                    
+                    comm_norm = self.matcher._normalize(part.get('comments', ''))
+
                     found_duplicate = False
                     for existing_key, existing_data in existing.items():
                         ex_part = self.matcher._normalize(existing_data.get('part', ''))
                         ex_asm = self.matcher._normalize(existing_data.get('assembly', ''))
-                        
-                        # Match if part name matches exactly
-                        if ex_part == part_norm:
-                            # If assembly is also known, check it too
-                            if asm_norm and ex_asm and asm_norm != ex_asm:
-                                continue
-                            found_duplicate = True
-                            self.ui.log(f"Row {part['row']}: Found duplicate match: Excel='{part['part']}' vs Site='{existing_data.get('part')}'", "SKIP")
-                            break
+                        ex_comm = self.matcher._normalize(existing_data.get('comments', ''))
+
+                        if ex_part != part_norm:
+                            continue
+                        # If assembly is known on both sides, it must also match
+                        if asm_norm and ex_asm and asm_norm != ex_asm:
+                            continue
+                        # Both part name and comments must match
+                        if comm_norm != ex_comm:
+                            continue
+                        found_duplicate = True
+                        self.ui.log(f"Row {part['row']}: Found duplicate match: Excel='{part['part']}' vs Site='{existing_data.get('part')}'", "SKIP")
+                        break
                     
                     if found_duplicate:
                         status_table.add_row(str(part['row']), part['part'], "[blue]SKIP[/]", "Duplicate (already on site)")
