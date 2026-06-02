@@ -77,8 +77,39 @@ class BOMAutomation:
         if not run_system:
             return
 
+        # 2b. Assembly (Subsystem) Filter
+        run_assembly = None
+        if "assembly" in df_temp.columns:
+            if run_system == "ALL":
+                asm_rows = df_temp
+            else:
+                def _resolve(s):
+                    norm = re.sub(r"\W+", "", str(s).strip().lower())
+                    return system_norm_map.get(norm, str(s).strip()).upper()
+                asm_rows = df_temp[df_temp["system"].apply(_resolve) == run_system]
+
+            assemblies = sorted(set(
+                str(v).strip() for v in asm_rows["assembly"].dropna().unique()
+                if str(v).strip() and str(v).strip().lower() not in ("nan", "0", "")
+            ))
+
+            if len(assemblies) > 1:
+                mode = self.ui.prompt_ask(questionary.select(
+                    "Assembly (subsystem) scope:",
+                    choices=[
+                        questionary.Choice("Process all assemblies", "all"),
+                        questionary.Choice("Filter to specific assemblies", "filter"),
+                    ]
+                ))
+                if mode == "filter":
+                    choices = [questionary.Choice(a, checked=False) for a in assemblies]
+                    selected = self.ui.prompt_ask(questionary.checkbox("Select assemblies to include:", choices=choices))
+                    run_assembly = selected if selected else None
+                else:
+                    run_assembly = None
+
         # 3. Filter Rows
-        parts, stats = self.excel.process_file(filepath, run_system, system_norm_map)
+        parts, stats = self.excel.process_file(filepath, run_system, system_norm_map, run_assembly)
         
         # Detailed logging of Excel scan
         self.ui.log(f"Excel Scan Summary for '{os.path.basename(filepath)}':")
@@ -86,6 +117,7 @@ class BOMAutomation:
         self.ui.log(f"  • Empty/Invalid rows:   {stats['empty_rows']}")
         self.ui.log(f"  • Example rows skipped: {stats['example_rows']}")
         self.ui.log(f"  • System mismatch:      {stats['system_mismatch']} (filtered by {run_system})")
+        self.ui.log(f"  • Assembly mismatch:    {stats['assembly_mismatch']} (filtered by subsystem)")
         self.ui.log(f"  • Already done (color): {stats['skipped_by_color']}")
         self.ui.log(f"  • Valid parts found:    {stats['valid_parts']}")
 
@@ -125,6 +157,7 @@ class BOMAutomation:
             
             matched_parts = []
             skipped_matching = 0
+            unmatched_assemblies = set()
             for p in parts:
                 resolved = self.matcher.resolve_label(p['assembly'], site_options, runtime_allowed or self.config.allowed_assemblies)
                 if resolved:
@@ -133,13 +166,22 @@ class BOMAutomation:
                     matched_parts.append(p)
                 else:
                     skipped_matching += 1
-            
+                    unmatched_assemblies.add(p['assembly'])
+
             self.ui.log("Assembly Matching Summary:")
             self.ui.log(f"  • Parts matching selected assemblies: {len(matched_parts)}")
             self.ui.log(f"  • Parts skipped (no assembly match): {skipped_matching}")
 
             if not matched_parts:
                 self.ui.log("No parts matched the selected assemblies. Exiting.", "ERROR")
+                self.ui.log(f"  Excel assembly names that failed to match:", "WARN")
+                for a in sorted(unmatched_assemblies):
+                    self.ui.log(f"    - '{a}'", "WARN")
+                self.ui.log(f"  Site assembly options available:", "WARN")
+                clean_opts = [o for o in site_options if o.strip()]
+                for o in clean_opts:
+                    self.ui.log(f"    + '{o}'", "WARN")
+                self.ui.log("  Tip: add mappings to BOMs/config.yaml under assembly_mappings to bridge the gap.", "WARN")
                 return
 
             if self.config.test_mode:
@@ -157,12 +199,9 @@ class BOMAutomation:
             # 5. Upload Loop
             start_time = time.time()
             live, status_table, progress, task_id = self.ui.create_dashboard(len(matched_parts))
-            
+
             with live:
                 for i, part in enumerate(matched_parts):
-                    # Canonical key match
-                    # To handle site-wide inconsistencies (where site system code differs from Excel),
-                    # we compare primarily based on assembly and part name.
                     part_norm = self.matcher._normalize(part['part'])
                     asm_norm = self.matcher._normalize(part['assembly'])
                     comm_norm = self.matcher._normalize(part.get('comments', ''))
@@ -175,16 +214,14 @@ class BOMAutomation:
 
                         if ex_part != part_norm:
                             continue
-                        # If assembly is known on both sides, it must also match
                         if asm_norm and ex_asm and asm_norm != ex_asm:
                             continue
-                        # Both part name and comments must match
                         if comm_norm != ex_comm:
                             continue
                         found_duplicate = True
                         self.ui.log(f"Row {part['row']}: Found duplicate match: Excel='{part['part']}' vs Site='{existing_data.get('part')}'", "SKIP")
                         break
-                    
+
                     if found_duplicate:
                         status_table.add_row(str(part['row']), part['part'], "[blue]SKIP[/]", "Duplicate (already on site)")
                         self.ui.log(f"Row {part['row']}: Skipped duplicate '{part['part']}'", "SKIP")

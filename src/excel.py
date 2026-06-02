@@ -99,12 +99,13 @@ class ExcelProcessor:
                 return skip
         return None
 
-    def process_file(self, filepath: str, run_system: str = "ALL", system_norm_map: dict = None) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
+    def process_file(self, filepath: str, run_system: str = "ALL", system_norm_map: dict = None, run_assembly: list = None) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
         stats = {
             "total_excel_rows": 0,
             "empty_rows": 0,
             "example_rows": 0,
             "system_mismatch": 0,
+            "assembly_mismatch": 0,
             "skipped_by_color": 0,
             "valid_parts": 0
         }
@@ -147,8 +148,8 @@ class ExcelProcessor:
                 sys_val = sys_raw.upper()
             part_val = str(row.iloc[col_map["part"]] if col_map["part"] is not None else "").strip()
 
-            # Skip rows with empty/invalid values
-            if not sys_val or sys_val == "NAN" or not part_val or part_val == "NAN":
+            # Skip rows with empty/invalid values (including numeric-only placeholders like "0")
+            if not sys_val or sys_val == "NAN" or not part_val or part_val == "NAN" or part_val == "0":
                 stats["empty_rows"] += 1
                 continue
 
@@ -171,6 +172,10 @@ class ExcelProcessor:
                 continue
 
             asm_val = str(row.iloc[col_map["assembly"]] if col_map["assembly"] is not None else "").strip()
+
+            if run_assembly and asm_val.lower() not in {a.lower() for a in run_assembly}:
+                stats["assembly_mismatch"] += 1
+                continue
             qty_val = str(row.iloc[col_map["quantity"]] if col_map["quantity"] is not None else "").strip()
             mb_val = str(row.iloc[col_map["makebuy"]] if col_map["makebuy"] is not None else "m").strip().lower()[:1] or "m"
             comm_val = str(row.iloc[col_map["comments"]] if col_map["comments"] is not None else "").strip().replace("nan", "")

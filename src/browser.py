@@ -114,29 +114,40 @@ class FSGBrowser:
     def create_part(self, item: Dict):
         self.page.get_by_text("New", exact=True).click()
         self.page.wait_for_selector(".DTE_Action_Create")
-        
-        self.page.locator("#DTE_Field_system").select_option(label=item['system_label'])
-        self.page.locator("#DTE_Field_system").dispatch_event("change")
-        time.sleep(0.3)
-        self.page.locator("#DTE_Field_assembly").select_option(label=item['assembly'])
-        self.page.locator("#DTE_Field_part").fill(item['part'])
-        
-        if item['makebuy'] == 'm':
-            self.page.locator("#DTE_Field_makebuy_0").check()
-        else:
-            self.page.locator("#DTE_Field_makebuy_1").check()
-        
-        if item['comments']:
-            self.page.locator("#DTE_Field_comments").fill(item['comments'])
-        if item['quantity']:
-            self.page.locator("#DTE_Field_quantity").fill(item['quantity'])
-        
-        self.page.get_by_text("Create", exact=True).click()
         try:
+            self.page.locator("#DTE_Field_system").select_option(label=item['system_label'])
+            self.page.locator("#DTE_Field_system").dispatch_event("change")
+            time.sleep(0.5)
+
+            # Validate the assembly exists before spending time waiting
+            available = self.page.eval_on_selector(
+                "#DTE_Field_assembly",
+                "el => Array.from(el.options).map(o => o.text.trim())"
+            )
+            if item['assembly'] not in available:
+                raise ValueError(
+                    f"Assembly '{item['assembly']}' not found in site dropdown. "
+                    f"Available: {[o for o in available if o]}"
+                )
+
+            self.page.locator("#DTE_Field_assembly").select_option(label=item['assembly'], timeout=5000)
+            self.page.locator("#DTE_Field_part").fill(item['part'])
+
+            if item['makebuy'] == 'm':
+                self.page.locator("#DTE_Field_makebuy_0").check()
+            else:
+                self.page.locator("#DTE_Field_makebuy_1").check()
+
+            if item['comments']:
+                self.page.locator("#DTE_Field_comments").fill(item['comments'])
+            if item['quantity']:
+                self.page.locator("#DTE_Field_quantity").fill(item['quantity'])
+
+            self.page.get_by_text("Create", exact=True).click()
             self.page.wait_for_selector(".DTE_Action_Create", state="hidden", timeout=10000)
+
         except Exception:
-            # Modal didn't close — server likely rejected the form (validation error).
-            # Force-dismiss it so the next part isn't blocked by the overlay.
+            # Always dismiss the modal so the next part isn't blocked by the overlay.
             try:
                 self.page.keyboard.press("Escape")
                 self.page.wait_for_selector(".DTE_Action_Create", state="hidden", timeout=3000)
