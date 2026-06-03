@@ -40,7 +40,7 @@ class FSGBrowser:
         try:
             self.page.get_by_text("New", exact=True).click()
             self.page.wait_for_selector(".DTE_Action_Create", timeout=5000)
-            
+
             if system_label:
                 self.page.locator("#DTE_Field_system").select_option(label=system_label)
                 self.page.locator("#DTE_Field_system").dispatch_event("change")
@@ -59,7 +59,7 @@ class FSGBrowser:
         try:
             self.page.wait_for_selector("#bom-table", timeout=10000)
             time.sleep(2.0)
-            
+
             data = self.page.evaluate("""() => {
                 const results = [];
                 const table = document.querySelector('#bom-table');
@@ -68,9 +68,9 @@ class FSGBrowser:
                 // 1. Get header mapping
                 const ths = Array.from(table.querySelectorAll('thead th'));
                 const headers = ths.map(th => th.innerText.toLowerCase().trim());
-                
+
                 const findIdx = (aliases) => headers.findIndex(h => aliases.some(a => h.includes(a)));
-                
+
                 const idxMap = {
                     assembly: findIdx(['assembly', 'asm', 'assy']),
                     part: findIdx(['part', 'name', 'designation', 'description']),
@@ -96,17 +96,17 @@ class FSGBrowser:
                 });
                 return results;
             }""")
-            
+
             existing = {}
             for r in data:
                 # Reliability check: Extract System from Row ID (e.g., 'DT_12345')
                 sys = ""
                 if r.get('id'):
                     sys = str(r.get('id')).split('_')[0].strip().upper()
-                
+
                 key = matcher.canonical_key(sys, r.get('assembly') or "", r.get('part') or "")
                 existing[key] = r
-                
+
             return existing
         except Exception:
             return {}
@@ -154,3 +154,84 @@ class FSGBrowser:
             except Exception:
                 pass
             raise
+
+    def create_sub_entries(self, part_name: str, entries: List[Dict]) -> None:
+        if not entries:
+            return
+
+        # Close any child tables left open from previous failed calls to avoid
+        # multiple .buttons-create buttons in the DOM (causes strict-mode failures).
+        for toggle in self.page.locator("i.toggle-child.fa-folder-open").all():
+            try:
+                toggle.click()
+                time.sleep(0.3)
+            except Exception:
+                pass
+
+        # Server truncates stored part names to 25 chars; match on prefix.
+        search_name = part_name[:25]
+        row = self.page.get_by_role("row").filter(has_text=search_name).first
+        row_id = row.get_attribute("id")
+        row.locator("i.toggle-child").click()
+
+        # aria-controls^='childTable_' distinguishes child New buttons from the
+        # main-table New button (which has aria-controls="bom-table").
+        if row_id:
+            new_btn_sel = f"#{row_id} + tr.child .buttons-create"
+        else:
+            new_btn_sel = "button.buttons-create[aria-controls^='childTable_']"
+
+        try:
+            self.page.wait_for_selector(new_btn_sel, state="visible", timeout=10000)
+
+            for entry in entries:
+                self.page.locator(new_btn_sel).click()
+                self.page.wait_for_selector("#DTE_Field_type:visible", timeout=10000)
+
+                try:
+                    # Selecting Type fires AJAX (ReadFormFieldConfig) that refreshes Subtype options.
+                    # expect_response waits for that call; if it doesn't fire (same default value)
+                    # the except branch just sleeps briefly instead.
+                    try:
+                        with self.page.expect_response(
+                            lambda r: "ReadFormFieldConfig" in r.url, timeout=5000
+                        ):
+                            self.page.locator("#DTE_Field_type:visible").select_option(label=entry["type"])
+                    except Exception:
+                        time.sleep(1.0)
+
+                    if entry.get("subtype"):
+                        self.page.locator("#DTE_Field_subtype:visible").select_option(label=entry["subtype"])
+                    if entry.get("subtype_name"):
+                        self.page.locator("#DTE_Field_subtype_name:visible").fill(entry["subtype_name"])
+                    # :visible qualifiers below avoid matching hidden main-editor fields with the same id
+                    if entry.get("comments"):
+                        self.page.locator("#DTE_Field_comments:visible").fill(entry["comments"])
+                    if entry.get("quantity"):
+                        self.page.locator("#DTE_Field_quantity:visible").fill(entry["quantity"])
+                    if entry.get("cost"):
+                        self.page.locator("#DTE_Field_costs:visible").fill(entry["cost"])
+                    if entry.get("cost_comments"):
+                        self.page.locator("#DTE_Field_comments_costs:visible").fill(entry["cost_comments"])
+                    if entry.get("emissions"):
+                        self.page.locator("#DTE_Field_emissions:visible").fill(entry["emissions"])
+                    if entry.get("emissions_comments"):
+                        self.page.locator("#DTE_Field_comments_emissions:visible").fill(entry["emissions_comments"])
+
+                    self.page.locator("[data-dte-e='form_buttons']:visible").get_by_text("Create", exact=True).click()
+                    self.page.wait_for_selector("#DTE_Field_type:visible", state="hidden", timeout=10000)
+                except Exception:
+                    try:
+                        self.page.keyboard.press("Escape")
+                        self.page.wait_for_selector("#DTE_Field_type:visible", state="hidden", timeout=3000)
+                    except Exception:
+                        pass
+                    raise
+
+                time.sleep(0.5)
+        finally:
+            # Close the child table so it doesn't accumulate and interfere with subsequent parts
+            try:
+                row.locator("i.toggle-child").click()
+            except Exception:
+                pass

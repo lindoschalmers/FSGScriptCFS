@@ -231,14 +231,24 @@ class BOMAutomation:
                         continue
 
                     if self.config.dry_run:
-                        status_table.add_row(str(part['row']), part['part'], "[magenta]DRY[/]", "Dry run - no upload")
-                        self.ui.log(f"Row {part['row']}: Dry run - would upload '{part['part']}'", "DRY")
+                        sub_entries = part.get("sub_entries", [])
+                        entry_info = f" + {len(sub_entries)} sub-entries" if sub_entries else ""
+                        status_table.add_row(str(part['row']), part['part'], "[magenta]DRY[/]", f"Dry run - no upload{entry_info}")
+                        self.ui.log(f"Row {part['row']}: Dry run - would upload '{part['part']}'{entry_info}", "DRY")
                     else:
                         try:
                             browser.create_part(part)
                             status_table.add_row(str(part['row']), part['part'], "[green]OK[/]", "Created")
                             self.ui.log(f"Row {part['row']}: Created '{part['part']}'", "OK")
                             existing[self.matcher.canonical_key(part['system'], part['assembly'], part['part'])] = part
+
+                            sub_entries = part.get("sub_entries", [])
+                            if sub_entries:
+                                try:
+                                    browser.create_sub_entries(part['part'], sub_entries)
+                                    self.ui.log(f"Row {part['row']}: Added {len(sub_entries)} sub-entries for '{part['part']}'", "OK")
+                                except Exception as e:
+                                    self.ui.log(f"Row {part['row']}: Error adding sub-entries for '{part['part']}': {e}", "ERROR")
                         except Exception as e:
                             status_table.add_row(str(part['row']), part['part'], "[red]ERR[/]", str(e))
                             self.ui.log(f"Row {part['row']}: Error creating '{part['part']}': {e}", "ERROR")

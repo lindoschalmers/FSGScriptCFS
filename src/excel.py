@@ -131,7 +131,17 @@ class ExcelProcessor:
             "part": find_col(["part", "part name", "designation"]),
             "quantity": find_col(["part_quantity", "quantity", "qty", "amount"]),
             "makebuy": find_col(["make o. buy", "m/b", "makebuy", "make/buy"]),
-            "comments": find_col(["part_comments", "comments", "notes", "comment"])
+            "comments": find_col(["part_comments", "comments", "notes", "comment"]),
+            # Sub-entry columns (Materials / Processes / Overhead rows in CCBOM)
+            "entry_type": find_col(["type"]),
+            "entry_subtype": find_col(["subtype"]),
+            "entry_subtype_name": find_col(["subtype name"]),
+            "entry_comments": find_col(["comment process", "comments (process)"]),
+            "entry_quantity": find_col(["quantity2", "qty2"]),
+            "entry_cost": find_col(["cost", "costs"]),
+            "entry_cost_comments": find_col(["comments costs", "comments (costs)"]),
+            "entry_emissions": find_col(["emissions"]),
+            "entry_emissions_comments": find_col(["comments emissions", "comments (emissions)"]),
         }
 
         if col_map["system"] is None or col_map["part"] is None:
@@ -140,16 +150,46 @@ class ExcelProcessor:
         filtered = []
         for idx, row in df.iterrows():
             excel_row = idx + 2
+
+            # Extract part and type values first for sub-entry detection
+            part_val = str(row.iloc[col_map["part"]] if col_map["part"] is not None else "").strip()
+            part_val = "" if part_val.lower() in ("nan", "0") else part_val
+
+            type_raw = str(row.iloc[col_map["entry_type"]] if col_map["entry_type"] is not None else "").strip()
+            type_val = "" if type_raw.lower() == "nan" else type_raw
+
+            # Sub-entry row: no Part name but has a Type → attach to previous part
+            if not part_val and type_val and filtered:
+                if not self.should_skip_row_color(sheet, excel_row):
+                    def _get(key, r=row):
+                        c = col_map.get(key)
+                        if c is None:
+                            return ""
+                        v = str(r.iloc[c]).strip()
+                        return "" if v.lower() == "nan" else v
+                    filtered[-1]["sub_entries"].append({
+                        "type": type_val,
+                        "subtype": _get("entry_subtype"),
+                        "subtype_name": _get("entry_subtype_name"),
+                        "comments": _get("entry_comments"),
+                        "quantity": _get("entry_quantity"),
+                        "cost": _get("entry_cost"),
+                        "cost_comments": _get("entry_cost_comments"),
+                        "emissions": _get("entry_emissions"),
+                        "emissions_comments": _get("entry_emissions_comments"),
+                    })
+                continue
+
+            # Regular part row processing
             sys_raw = str(row.iloc[col_map["system"]] if col_map["system"] is not None else "").strip()
             if system_norm_map:
                 norm = re.sub(r"\W+", "", sys_raw.lower())
                 sys_val = system_norm_map.get(norm, sys_raw).upper()
             else:
                 sys_val = sys_raw.upper()
-            part_val = str(row.iloc[col_map["part"]] if col_map["part"] is not None else "").strip()
 
-            # Skip rows with empty/invalid values (including numeric-only placeholders like "0")
-            if not sys_val or sys_val == "NAN" or not part_val or part_val == "NAN" or part_val == "0":
+            # Skip rows with empty/invalid values
+            if not sys_val or sys_val == "NAN" or not part_val:
                 stats["empty_rows"] += 1
                 continue
 
@@ -188,6 +228,7 @@ class ExcelProcessor:
                 "makebuy": mb_val,
                 "quantity": qty_val,
                 "comments": comm_val,
+                "sub_entries": [],
             })
             stats["valid_parts"] += 1
 
