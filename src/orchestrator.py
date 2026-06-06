@@ -191,45 +191,12 @@ class BOMAutomation:
             else:
                 self.ui.log(f"Will attempt to upload all {len(matched_parts)} matched parts.")
 
-            # Deduplication
-            self.ui.log("Fetching existing parts from FSG for deduplication...")
-            existing = browser.scrape_existing_parts(self.matcher)
-            self.ui.log(f"Found {len(existing)} existing parts on the website.")
-
             # 5. Upload Loop
             start_time = time.time()
             live, status_table, progress, task_id = self.ui.create_dashboard(len(matched_parts))
 
             with live:
                 for i, part in enumerate(matched_parts):
-                    part_norm = self.matcher._normalize(part['part'])
-                    asm_norm = self.matcher._normalize(part['assembly'])
-                    comm_norm = self.matcher._normalize(part.get('comments', ''))
-
-                    found_duplicate = False
-                    for existing_key, existing_data in existing.items():
-                        ex_part = self.matcher._normalize(existing_data.get('part', ''))
-                        ex_asm = self.matcher._normalize(existing_data.get('assembly', ''))
-                        ex_comm = self.matcher._normalize(existing_data.get('comments', ''))
-
-                        if ex_part != part_norm:
-                            continue
-                        if asm_norm and ex_asm and asm_norm != ex_asm:
-                            continue
-                        if comm_norm != ex_comm:
-                            continue
-                        found_duplicate = True
-                        self.ui.log(f"Row {part['row']}: Found duplicate match: Excel='{part['part']}' vs Site='{existing_data.get('part')}'", "SKIP")
-                        break
-
-                    if found_duplicate:
-                        status_table.add_row(str(part['row']), part['part'], "[blue]SKIP[/]", "Duplicate (already on site)")
-                        self.ui.log(f"Row {part['row']}: Skipped duplicate '{part['part']}'", "SKIP")
-                        self.ui.update_eta(progress, task_id, start_time, i + 1, len(matched_parts))
-                        progress.update(task_id, advance=1)
-                        self._smart_delay(self.config.base_delay)
-                        continue
-
                     if self.config.dry_run:
                         status_table.add_row(str(part['row']), part['part'], "[magenta]DRY[/]", "Dry run - no upload")
                         self.ui.log(f"Row {part['row']}: Dry run - would upload '{part['part']}'", "DRY")
@@ -238,7 +205,6 @@ class BOMAutomation:
                             browser.create_part(part)
                             status_table.add_row(str(part['row']), part['part'], "[green]OK[/]", "Created")
                             self.ui.log(f"Row {part['row']}: Created '{part['part']}'", "OK")
-                            existing[self.matcher.canonical_key(part['system'], part['assembly'], part['part'])] = part
                         except Exception as e:
                             status_table.add_row(str(part['row']), part['part'], "[red]ERR[/]", str(e))
                             self.ui.log(f"Row {part['row']}: Error creating '{part['part']}': {e}", "ERROR")
