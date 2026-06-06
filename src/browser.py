@@ -134,16 +134,15 @@ class FSGBrowser:
     def _fill_subassembly(self, value: str):
         selector, options = self._find_subassembly_select()
         if not selector:
-            # Subassembly field not present on this form — skip silently
             return
 
         if value in options:
             self.page.locator(selector).select_option(label=value, timeout=5000)
             return
 
-        # Value not listed — look for a "New" sentinel option
+        # Value not listed — look for any option whose text contains "new"
         new_opt = next(
-            (o for o in options if o.strip().lower() in ("new", "new...", "-- new --", "add new")),
+            (o for o in options if "new" in o.strip().lower()),
             None
         )
         if new_opt is None:
@@ -153,30 +152,35 @@ class FSGBrowser:
             )
 
         self.page.locator(selector).select_option(label=new_opt, timeout=5000)
+        time.sleep(0.8)
 
-        # After selecting "New", a text input should appear.  Try several selectors.
-        field_base = selector.lstrip('#').lstrip('[name="').rstrip('"]')
-        candidates = [
-            f"#{field_base}_new",
-            f".DTE_Field_Name_{field_base} input[type=text]",
-            f".DTE_Field_Name_{field_base} input",
+        # After selecting "New", find whatever text input became visible anywhere
+        # in the document, excluding inputs that were already there.
+        KNOWN_FIELD_IDS = [
+            "DTE_Field_system", "DTE_Field_assembly",
+            "DTE_Field_part", "DTE_Field_comments", "DTE_Field_quantity",
         ]
-        new_input = None
-        for cand in candidates:
-            loc = self.page.locator(cand)
-            try:
-                loc.wait_for(state="visible", timeout=2000)
-                new_input = loc
-                break
-            except Exception:
-                continue
+        new_input_selector = self.page.evaluate("""(knownIds) => {
+            const inputs = Array.from(
+                document.querySelectorAll('input[type=text], input[type=""], input:not([type])')
+            );
+            for (const inp of inputs) {
+                if (knownIds.includes(inp.id)) continue;
+                const rect = inp.getBoundingClientRect();
+                if (rect.width > 0 && rect.height > 0) {
+                    if (inp.id)   return '#' + inp.id;
+                    if (inp.name) return '[name="' + inp.name + '"]';
+                }
+            }
+            return null;
+        }""", KNOWN_FIELD_IDS)
 
-        if new_input is None:
+        if not new_input_selector:
             raise RuntimeError(
-                f"Could not find the text input that should appear after selecting "
-                f"'New' for the subassembly field (tried: {candidates})"
+                f"Could not find the text input revealed after selecting 'New' "
+                f"for subassembly '{value}'"
             )
-        new_input.fill(value)
+        self.page.locator(new_input_selector).fill(value)
 
     def create_part(self, item: Dict):
         self.page.get_by_text("New", exact=True).click()
