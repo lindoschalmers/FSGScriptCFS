@@ -111,6 +111,73 @@ class FSGBrowser:
         except Exception:
             return {}
 
+    def _find_subassembly_select(self):
+        """Return (css_selector, options_list) for the subassembly <select>, or (None, [])."""
+        result = self.page.evaluate("""() => {
+            const keywords = ['subassembly', 'sub_assembly', 'sub-assembly'];
+            for (const sel of document.querySelectorAll('select')) {
+                const id   = (sel.id   || '').toLowerCase().replace(/[\\s-]/g, '_');
+                const name = (sel.name || '').toLowerCase().replace(/[\\s-]/g, '_');
+                if (keywords.some(k => id.includes(k) || name.includes(k))) {
+                    return {
+                        selector: sel.id ? '#' + sel.id : '[name="' + sel.name + '"]',
+                        options:  Array.from(sel.options).map(o => o.text.trim())
+                    };
+                }
+            }
+            return null;
+        }""")
+        if result:
+            return result['selector'], result['options']
+        return None, []
+
+    def _fill_subassembly(self, value: str):
+        selector, options = self._find_subassembly_select()
+        if not selector:
+            # Subassembly field not present on this form — skip silently
+            return
+
+        if value in options:
+            self.page.locator(selector).select_option(label=value, timeout=5000)
+            return
+
+        # Value not listed — look for a "New" sentinel option
+        new_opt = next(
+            (o for o in options if o.strip().lower() in ("new", "new...", "-- new --", "add new")),
+            None
+        )
+        if new_opt is None:
+            raise ValueError(
+                f"Subassembly '{value}' not found and no 'New' option available. "
+                f"Options: {[o for o in options if o]}"
+            )
+
+        self.page.locator(selector).select_option(label=new_opt, timeout=5000)
+
+        # After selecting "New", a text input should appear.  Try several selectors.
+        field_base = selector.lstrip('#').lstrip('[name="').rstrip('"]')
+        candidates = [
+            f"#{field_base}_new",
+            f".DTE_Field_Name_{field_base} input[type=text]",
+            f".DTE_Field_Name_{field_base} input",
+        ]
+        new_input = None
+        for cand in candidates:
+            loc = self.page.locator(cand)
+            try:
+                loc.wait_for(state="visible", timeout=2000)
+                new_input = loc
+                break
+            except Exception:
+                continue
+
+        if new_input is None:
+            raise RuntimeError(
+                f"Could not find the text input that should appear after selecting "
+                f"'New' for the subassembly field (tried: {candidates})"
+            )
+        new_input.fill(value)
+
     def create_part(self, item: Dict):
         self.page.get_by_text("New", exact=True).click()
         self.page.wait_for_selector(".DTE_Action_Create")
@@ -131,6 +198,12 @@ class FSGBrowser:
                 )
 
             self.page.locator("#DTE_Field_assembly").select_option(label=item['assembly'], timeout=5000)
+            self.page.locator("#DTE_Field_assembly").dispatch_event("change")
+            time.sleep(0.3)
+
+            if item.get('subassembly'):
+                self._fill_subassembly(item['subassembly'])
+
             self.page.locator("#DTE_Field_part").fill(item['part'])
 
             if item['makebuy'] == 'm':
