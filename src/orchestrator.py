@@ -120,6 +120,8 @@ class BOMAutomation:
         self.ui.log(f"  • Assembly mismatch:    {stats['assembly_mismatch']} (filtered by subsystem)")
         self.ui.log(f"  • Already done (color): {stats['skipped_by_color']}")
         self.ui.log(f"  • Valid parts found:    {stats['valid_parts']}")
+        total_sub = sum(len(p.get('sub_entries', [])) for p in parts)
+        self.ui.log(f"  • Sub-entries detected: {total_sub}")
 
         if not parts:
             self.ui.log("No valid parts found after filtering. Exiting.", "WARN")
@@ -191,67 +193,40 @@ class BOMAutomation:
             else:
                 self.ui.log(f"Will attempt to upload all {len(matched_parts)} matched parts.")
 
-            # Deduplication
-            self.ui.log("Fetching existing parts from FSG for deduplication...")
-            existing = browser.scrape_existing_parts(self.matcher)
-            self.ui.log(f"Found {len(existing)} existing parts on the website.")
-
             # 5. Upload Loop
             start_time = time.time()
             live, status_table, progress, task_id = self.ui.create_dashboard(len(matched_parts))
 
             with live:
                 for i, part in enumerate(matched_parts):
-                    part_norm = self.matcher._normalize(part['part'])
-                    asm_norm = self.matcher._normalize(part['assembly'])
-                    comm_norm = self.matcher._normalize(part.get('comments', ''))
-
-                    found_duplicate = False
-                    for existing_key, existing_data in existing.items():
-                        ex_part = self.matcher._normalize(existing_data.get('part', ''))
-                        ex_asm = self.matcher._normalize(existing_data.get('assembly', ''))
-                        ex_comm = self.matcher._normalize(existing_data.get('comments', ''))
-
-                        if ex_part != part_norm:
-                            continue
-                        if asm_norm and ex_asm and asm_norm != ex_asm:
-                            continue
-                        if comm_norm != ex_comm:
-                            continue
-                        found_duplicate = True
-                        self.ui.log(f"Row {part['row']}: Found duplicate match: Excel='{part['part']}' vs Site='{existing_data.get('part')}'", "SKIP")
-                        break
-
-                    if found_duplicate:
-                        status_table.add_row(str(part['row']), part['part'], "[blue]SKIP[/]", "Duplicate (already on site)")
-                        self.ui.log(f"Row {part['row']}: Skipped duplicate '{part['part']}'", "SKIP")
-                        self.ui.update_eta(progress, task_id, start_time, i + 1, len(matched_parts))
-                        progress.update(task_id, advance=1)
-                        self._smart_delay(self.config.base_delay)
-                        continue
+                    sub_entries = part.get("sub_entries", [])
+                    n_sub = len(sub_entries)
 
                     if self.config.dry_run:
-                        sub_entries = part.get("sub_entries", [])
-                        entry_info = f" + {len(sub_entries)} sub-entries" if sub_entries else ""
-                        status_table.add_row(str(part['row']), part['part'], "[magenta]DRY[/]", f"Dry run - no upload{entry_info}")
+                        entry_info = f" + {n_sub} sub-entries" if n_sub else ""
+                        status_table.add_row(str(part['row']), part['part'], "[magenta]DRY[/]", f"Dry run{entry_info}")
                         self.ui.log(f"Row {part['row']}: Dry run - would upload '{part['part']}'{entry_info}", "DRY")
                     else:
+                        part_ok = False
                         try:
                             browser.create_part(part)
-                            status_table.add_row(str(part['row']), part['part'], "[green]OK[/]", "Created")
-                            self.ui.log(f"Row {part['row']}: Created '{part['part']}'", "OK")
-                            existing[self.matcher.canonical_key(part['system'], part['assembly'], part['part'])] = part
+                            part_ok = True
+                        except Exception as e:
+                            status_table.add_row(str(part['row']), part['part'], "[red]ERR[/]", str(e)[:80])
+                            self.ui.log(f"Row {part['row']}: Error creating '{part['part']}': {e}", "ERROR")
 
-                            sub_entries = part.get("sub_entries", [])
+                        if part_ok:
+                            self.ui.log(f"Row {part['row']}: Created '{part['part']}'", "OK")
                             if sub_entries:
                                 try:
                                     browser.create_sub_entries(part['part'], sub_entries)
-                                    self.ui.log(f"Row {part['row']}: Added {len(sub_entries)} sub-entries for '{part['part']}'", "OK")
+                                    status_table.add_row(str(part['row']), part['part'], "[green]OK[/]", f"Created + {n_sub} sub-entries")
+                                    self.ui.log(f"Row {part['row']}: Added {n_sub} sub-entries for '{part['part']}'", "OK")
                                 except Exception as e:
+                                    status_table.add_row(str(part['row']), part['part'], "[yellow]WARN[/]", f"Created (sub ERR: {str(e)[:60]})")
                                     self.ui.log(f"Row {part['row']}: Error adding sub-entries for '{part['part']}': {e}", "ERROR")
-                        except Exception as e:
-                            status_table.add_row(str(part['row']), part['part'], "[red]ERR[/]", str(e))
-                            self.ui.log(f"Row {part['row']}: Error creating '{part['part']}': {e}", "ERROR")
+                            else:
+                                status_table.add_row(str(part['row']), part['part'], "[green]OK[/]", "Created")
 
                     self.ui.update_eta(progress, task_id, start_time, i + 1, len(matched_parts))
                     progress.update(task_id, advance=1)

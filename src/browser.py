@@ -111,8 +111,82 @@ class FSGBrowser:
         except Exception:
             return {}
 
+    def _find_subassembly_select(self):
+        """Return (css_selector, options_list) for the subassembly <select>, or (None, [])."""
+        result = self.page.evaluate("""() => {
+            const keywords = ['subassembly', 'sub_assembly', 'sub-assembly'];
+            for (const sel of document.querySelectorAll('select')) {
+                const id   = (sel.id   || '').toLowerCase().replace(/[\\s-]/g, '_');
+                const name = (sel.name || '').toLowerCase().replace(/[\\s-]/g, '_');
+                if (keywords.some(k => id.includes(k) || name.includes(k))) {
+                    return {
+                        selector: sel.id ? '#' + sel.id : '[name="' + sel.name + '"]',
+                        options:  Array.from(sel.options).map(o => o.text.trim())
+                    };
+                }
+            }
+            return null;
+        }""")
+        if result:
+            return result['selector'], result['options']
+        return None, []
+
+    def _fill_subassembly(self, value: str):
+        selector, options = self._find_subassembly_select()
+        if not selector:
+            return
+
+        if value in options:
+            self.page.locator(selector).select_option(label=value, timeout=5000)
+            return
+
+        new_opt = next((o for o in options if "new" in o.strip().lower()), None)
+        if new_opt is None:
+            raise ValueError(
+                f"Subassembly '{value}' not found and no 'New' option available. "
+                f"Options: {[o for o in options if o]}"
+            )
+
+        self.page.locator(selector).select_option(label=new_opt, timeout=5000)
+        time.sleep(0.8)
+
+        KNOWN_FIELD_IDS = [
+            "DTE_Field_system", "DTE_Field_assembly",
+            "DTE_Field_part", "DTE_Field_comments", "DTE_Field_quantity",
+        ]
+        new_input_selector = self.page.evaluate("""(knownIds) => {
+            const inputs = Array.from(
+                document.querySelectorAll('input[type=text], input[type=""], input:not([type])')
+            );
+            for (const inp of inputs) {
+                if (knownIds.includes(inp.id)) continue;
+                const rect = inp.getBoundingClientRect();
+                if (rect.width > 0 && rect.height > 0) {
+                    if (inp.id)   return '#' + inp.id;
+                    if (inp.name) return '[name="' + inp.name + '"]';
+                }
+            }
+            return null;
+        }""", KNOWN_FIELD_IDS)
+
+        if not new_input_selector:
+            raise RuntimeError(
+                f"Could not find the text input revealed after selecting 'New' "
+                f"for subassembly '{value}'"
+            )
+        self.page.locator(new_input_selector).fill(value)
+
+    def _close_open_child_tables(self):
+        for toggle in self.page.locator("i.toggle-child.fa-folder-open").all():
+            try:
+                toggle.click()
+                time.sleep(0.3)
+            except Exception:
+                pass
+
     def create_part(self, item: Dict):
-        self.page.get_by_text("New", exact=True).click()
+        self._close_open_child_tables()
+        self.page.get_by_role("button", name="New").first.click()
         self.page.wait_for_selector(".DTE_Action_Create")
         try:
             self.page.locator("#DTE_Field_system").select_option(label=item['system_label'])
@@ -131,6 +205,12 @@ class FSGBrowser:
                 )
 
             self.page.locator("#DTE_Field_assembly").select_option(label=item['assembly'], timeout=5000)
+            self.page.locator("#DTE_Field_assembly").dispatch_event("change")
+            time.sleep(0.3)
+
+            if item.get('subassembly'):
+                self._fill_subassembly(item['subassembly'])
+
             self.page.locator("#DTE_Field_part").fill(item['part'])
 
             if item['makebuy'] == 'm':
@@ -170,16 +250,14 @@ class FSGBrowser:
 
         # Server truncates stored part names to 25 chars; match on prefix.
         search_name = part_name[:25]
+        self.page.wait_for_selector(f"#bom-table tr:has-text('{search_name}')", timeout=10000)
         row = self.page.get_by_role("row").filter(has_text=search_name).first
         row_id = row.get_attribute("id")
         row.locator("i.toggle-child").click()
 
-        # aria-controls^='childTable_' distinguishes child New buttons from the
-        # main-table New button (which has aria-controls="bom-table").
-        if row_id:
-            new_btn_sel = f"#{row_id} + tr.child .buttons-create"
-        else:
-            new_btn_sel = "button.buttons-create[aria-controls^='childTable_']"
+        # Use aria-controls to reliably distinguish the child-table New button
+        # from the main-table New button (which has aria-controls="bom-table").
+        new_btn_sel = "button.buttons-create[aria-controls^='childTable_']"
 
         try:
             self.page.wait_for_selector(new_btn_sel, state="visible", timeout=10000)
@@ -230,8 +308,10 @@ class FSGBrowser:
 
                 time.sleep(0.5)
         finally:
-            # Close the child table so it doesn't accumulate and interfere with subsequent parts
+            # Close any expanded child table so it doesn't leave a second "New" button
+            # visible for the next create_part() call.
             try:
-                row.locator("i.toggle-child").click()
+                self.page.locator("i.toggle-child.fa-folder-open").first.click()
+                time.sleep(0.3)
             except Exception:
                 pass

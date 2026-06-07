@@ -128,6 +128,7 @@ class ExcelProcessor:
         col_map = {
             "system": find_col(["system", "sys"]),
             "assembly": find_col(["assembly", "asm", "assy"]),
+            "subassembly": find_col(["subassembly", "sub assembly", "sub_assembly", "subasm"]),
             "part": find_col(["part", "part name", "designation"]),
             "quantity": find_col(["part_quantity", "quantity", "qty", "amount"]),
             "makebuy": find_col(["make o. buy", "m/b", "makebuy", "make/buy"]),
@@ -137,7 +138,7 @@ class ExcelProcessor:
             "entry_subtype": find_col(["subtype"]),
             "entry_subtype_name": find_col(["subtype name"]),
             "entry_comments": find_col(["comment process", "comments (process)"]),
-            "entry_quantity": find_col(["quantity2", "qty2"]),
+            "entry_quantity": find_col(["quantity 2", "quantity2", "qty2"]),
             "entry_cost": find_col(["cost", "costs"]),
             "entry_cost_comments": find_col(["comments costs", "comments (costs)"]),
             "entry_emissions": find_col(["emissions"]),
@@ -158,8 +159,10 @@ class ExcelProcessor:
             type_raw = str(row.iloc[col_map["entry_type"]] if col_map["entry_type"] is not None else "").strip()
             type_val = "" if type_raw.lower() == "nan" else type_raw
 
-            # Sub-entry row: no Part name but has a Type → attach to previous part
-            if not part_val and type_val and filtered:
+            # Sub-entry row: any row with a Type value (Material / Process / Overhead)
+            # is a sub-entry. This works regardless of whether the system/assembly
+            # columns are filled in (many sheets repeat the system for all rows).
+            if type_val and filtered:
                 if not self.should_skip_row_color(sheet, excel_row):
                     def _get(key, r=row):
                         c = col_map.get(key)
@@ -216,6 +219,7 @@ class ExcelProcessor:
             if run_assembly and asm_val.lower() not in {a.lower() for a in run_assembly}:
                 stats["assembly_mismatch"] += 1
                 continue
+            subasm_val = str(row.iloc[col_map["subassembly"]] if col_map["subassembly"] is not None else "").strip().replace("nan", "")
             qty_val = str(row.iloc[col_map["quantity"]] if col_map["quantity"] is not None else "").strip()
             mb_val = str(row.iloc[col_map["makebuy"]] if col_map["makebuy"] is not None else "m").strip().lower()[:1] or "m"
             comm_val = str(row.iloc[col_map["comments"]] if col_map["comments"] is not None else "").strip().replace("nan", "")
@@ -224,6 +228,7 @@ class ExcelProcessor:
                 "row": excel_row,
                 "system": sys_val,
                 "assembly": asm_val,
+                "subassembly": subasm_val,
                 "part": part_val,
                 "makebuy": mb_val,
                 "quantity": qty_val,
