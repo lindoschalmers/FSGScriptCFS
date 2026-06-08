@@ -265,11 +265,11 @@ class FSGBrowser:
             for entry in entries:
                 self.page.locator(new_btn_sel).click()
                 self.page.wait_for_selector("#DTE_Field_type:visible", timeout=10000)
-                time.sleep(1.5)  # let form-init AJAX settle before touching fields
+                time.sleep(1.0)  # let form-init AJAX settle before touching fields
 
                 try:
                     self.page.locator("#DTE_Field_type:visible").select_option(label=entry["type"])
-                    time.sleep(2.0)  # let ReadFormFieldConfig AJAX finish and update the DOM
+                    time.sleep(1.5)  # let ReadFormFieldConfig AJAX finish and update the DOM
 
                     if entry.get("subtype"):
                         self.page.locator("#DTE_Field_subtype:visible").select_option(label=entry["subtype"])
@@ -298,7 +298,7 @@ class FSGBrowser:
                         pass
                     raise
 
-                time.sleep(3.0)  # let DataTables reload the child table before the next entry
+                time.sleep(2.0)  # let DataTables reload the child table before the next entry
         finally:
             # Close any expanded child table so it doesn't leave a second "New" button
             # visible for the next create_part() call.
