@@ -265,24 +265,16 @@ class FSGBrowser:
             for entry in entries:
                 self.page.locator(new_btn_sel).click()
                 self.page.wait_for_selector("#DTE_Field_type:visible", timeout=10000)
+                time.sleep(1.5)  # let form-init AJAX settle before touching fields
 
                 try:
-                    # Selecting Type fires AJAX (ReadFormFieldConfig) that refreshes Subtype options.
-                    # expect_response waits for that call; if it doesn't fire (same default value)
-                    # the except branch just sleeps briefly instead.
-                    try:
-                        with self.page.expect_response(
-                            lambda r: "ReadFormFieldConfig" in r.url, timeout=5000
-                        ):
-                            self.page.locator("#DTE_Field_type:visible").select_option(label=entry["type"])
-                    except Exception:
-                        time.sleep(1.0)
+                    self.page.locator("#DTE_Field_type:visible").select_option(label=entry["type"])
+                    time.sleep(2.0)  # let ReadFormFieldConfig AJAX finish and update the DOM
 
                     if entry.get("subtype"):
                         self.page.locator("#DTE_Field_subtype:visible").select_option(label=entry["subtype"])
                     if entry.get("subtype_name"):
                         self.page.locator("#DTE_Field_subtype_name:visible").fill(entry["subtype_name"])
-                    # :visible qualifiers below avoid matching hidden main-editor fields with the same id
                     if entry.get("comments"):
                         self.page.locator("#DTE_Field_comments:visible").fill(entry["comments"])
                     if entry.get("quantity"):
@@ -306,7 +298,7 @@ class FSGBrowser:
                         pass
                     raise
 
-                time.sleep(0.5)
+                time.sleep(3.0)  # let DataTables reload the child table before the next entry
         finally:
             # Close any expanded child table so it doesn't leave a second "New" button
             # visible for the next create_part() call.
