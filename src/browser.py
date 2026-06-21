@@ -186,9 +186,11 @@ class FSGBrowser:
         self.page.get_by_text("New", exact=True).click()
         self.page.wait_for_selector(".DTE_Action_Create")
         try:
+            time.sleep(1.0)
             self.page.locator("#DTE_Field_system").select_option(label=item['system_label'])
+            time.sleep(1.0)
             self.page.locator("#DTE_Field_system").dispatch_event("change")
-            time.sleep(1.5)
+            time.sleep(2.0)
 
             # Validate the assembly exists before spending time waiting
             available = self.page.eval_on_selector(
