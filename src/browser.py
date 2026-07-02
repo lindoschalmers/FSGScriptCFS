@@ -223,7 +223,7 @@ class FSGBrowser:
         try:
             self.page.locator("#DTE_Field_system").select_option(label=item['system_label'])
             self.page.locator("#DTE_Field_system").dispatch_event("change")
-            time.sleep(1.0)
+            time.sleep(2.0)
 
             # Validate the assembly exists before spending time waiting
             available = self.page.eval_on_selector(
