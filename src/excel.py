@@ -15,6 +15,10 @@ class ExcelProcessor:
     RED_TARGET = (255, 0, 0)
     COLOR_TOLERANCE = 110
 
+    # Fields that end up in numeric/type="number" inputs downstream (Playwright fill),
+    # so they must use a period as the decimal separator, not a comma.
+    NUMERIC_ENTRY_KEYS = {"entry_quantity", "entry_cost", "entry_emissions"}
+
     def __init__(self, boms_dir: str):
         self.boms_dir = boms_dir
 
@@ -99,6 +103,37 @@ class ExcelProcessor:
                 return skip
         return None
 
+    def _normalize_numeric_string(self, value: str) -> str:
+        """
+        Normalize a numeric-looking string to use '.' as the decimal separator,
+        so it survives Playwright .fill() into type="number" inputs.
+
+        Handles:
+          "19,30"      -> "19.30"     (comma as decimal sep)
+          "19.30"      -> "19.30"     (already fine, e.g. from pandas float)
+          "1.234,56"   -> "1234.56"   (dot thousands-sep, comma decimal-sep)
+          "1,234.56"   -> "1234.56"   (comma thousands-sep, dot decimal-sep)
+        """
+        v = value.strip()
+        if not v:
+            return v
+
+        has_comma = "," in v
+        has_dot = "." in v
+
+        if has_comma and has_dot:
+            # Whichever separator appears last is the decimal separator.
+            if v.rfind(",") > v.rfind("."):
+                v = v.replace(".", "").replace(",", ".")
+            else:
+                v = v.replace(",", "")
+        elif has_comma:
+            # Only a comma present: treat as the decimal separator.
+            v = v.replace(",", ".")
+        # else: only a dot (or neither) present -- already fine.
+
+        return v
+
     def process_file(self, filepath: str, run_system: str = "ALL", system_norm_map: dict = None, run_assembly: list = None) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
         stats = {
             "total_excel_rows": 0,
@@ -169,7 +204,11 @@ class ExcelProcessor:
                         if c is None:
                             return ""
                         v = str(r.iloc[c]).strip()
-                        return "" if v.lower() == "nan" else v
+                        if v.lower() == "nan":
+                            return ""
+                        if key in self.NUMERIC_ENTRY_KEYS:
+                            v = self._normalize_numeric_string(v)
+                        return v
                     filtered[-1]["sub_entries"].append({
                         "type": type_val,
                         "subtype": _get("entry_subtype"),
@@ -224,6 +263,32 @@ class ExcelProcessor:
             mb_val = str(row.iloc[col_map["makebuy"]] if col_map["makebuy"] is not None else "m").strip().lower()[:1] or "m"
             comm_val = str(row.iloc[col_map["comments"]] if col_map["comments"] is not None else "").strip().replace("nan", "")
 
+            # Costs/Comments Costs/Emissions/Comments Emissions share their columns
+            # with sub-entry rows. When Type is empty (this branch), any values
+            # present here belong directly to the part itself -- some System/
+            # Assembly combos (e.g. ET/Accumulator) put Costs+Emissions fields
+            # right on the "Create new entry" form instead of in a sub-entry row.
+            def _get_part_numeric(key, r=row):
+                c = col_map.get(key)
+                if c is None:
+                    return ""
+                v = str(r.iloc[c]).strip()
+                if v.lower() == "nan":
+                    return ""
+                return self._normalize_numeric_string(v)
+
+            def _get_part_text(key, r=row):
+                c = col_map.get(key)
+                if c is None:
+                    return ""
+                v = str(r.iloc[c]).strip()
+                return "" if v.lower() == "nan" else v
+
+            cost_val = _get_part_numeric("entry_cost")
+            cost_comm_val = _get_part_text("entry_cost_comments")
+            emissions_val = _get_part_numeric("entry_emissions")
+            emissions_comm_val = _get_part_text("entry_emissions_comments")
+
             filtered.append({
                 "row": excel_row,
                 "system": sys_val,
@@ -233,6 +298,10 @@ class ExcelProcessor:
                 "makebuy": mb_val,
                 "quantity": qty_val,
                 "comments": comm_val,
+                "cost": cost_val,
+                "cost_comments": cost_comm_val,
+                "emissions": emissions_val,
+                "emissions_comments": emissions_comm_val,
                 "sub_entries": [],
             })
             stats["valid_parts"] += 1

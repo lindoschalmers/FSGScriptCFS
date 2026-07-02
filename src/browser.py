@@ -1,6 +1,6 @@
 import time
 from typing import List, Dict, Optional
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
 class FSGBrowser:
     def __init__(self, config):
@@ -44,7 +44,7 @@ class FSGBrowser:
             if system_label:
                 self.page.locator("#DTE_Field_system").select_option(label=system_label)
                 self.page.locator("#DTE_Field_system").dispatch_event("change")
-                time.sleep(0.5)
+                time.sleep(1.0)
 
             options = self.page.eval_on_selector(
                 "#DTE_Field_assembly",
@@ -148,7 +148,7 @@ class FSGBrowser:
             )
 
         self.page.locator(selector).select_option(label=new_opt, timeout=5000)
-        time.sleep(0.8)
+        time.sleep(1.0)
 
         KNOWN_FIELD_IDS = [
             "DTE_Field_system", "DTE_Field_assembly",
@@ -176,11 +176,43 @@ class FSGBrowser:
             )
         self.page.locator(new_input_selector).fill(value)
 
+    def _find_field_by_label(self, label_text: str, timeout: int = 10000) -> Optional[str]:
+        """Return a CSS selector for a visible DTE form field's input/textarea,
+        located by its label text (e.g. "Costs", "Comments (emissions)").
+
+        DataTables Editor's generated field ids vary per editor config (we've
+        seen the same-looking "Costs" field use a different id here than in
+        create_sub_entries's child-table form), so guessing an id is unreliable.
+        Every field is wrapped in a ".DTE_Field" div containing a <label> --
+        matching on the label the user actually sees is what's actually stable.
+        """
+        script = """(label) => {
+            const target = label.trim().toLowerCase().replace(/:$/, '');
+            for (const field of document.querySelectorAll('.DTE_Field')) {
+                const rect = field.getBoundingClientRect();
+                if (rect.width === 0 || rect.height === 0) continue;
+                const lbl = field.querySelector('label');
+                if (!lbl) continue;
+                const text = lbl.innerText.trim().toLowerCase().replace(/:$/, '');
+                if (text !== target) continue;
+                const input = field.querySelector('input, textarea');
+                if (!input) continue;
+                if (input.id) return '#' + input.id;
+                if (input.name) return '[name="' + input.name + '"]';
+            }
+            return null;
+        }"""
+        try:
+            self.page.wait_for_function(script, arg=label_text, timeout=timeout)
+        except PlaywrightTimeoutError:
+            return None
+        return self.page.evaluate(script, label_text)
+
     def _close_open_child_tables(self):
         for toggle in self.page.locator("i.toggle-child.fa-folder-open").all():
             try:
                 toggle.click()
-                time.sleep(0.3)
+                time.sleep(1.0)
             except Exception:
                 pass
 
@@ -191,7 +223,7 @@ class FSGBrowser:
         try:
             self.page.locator("#DTE_Field_system").select_option(label=item['system_label'])
             self.page.locator("#DTE_Field_system").dispatch_event("change")
-            time.sleep(0.5)
+            time.sleep(1.0)
 
             # Validate the assembly exists before spending time waiting
             available = self.page.eval_on_selector(
@@ -206,22 +238,56 @@ class FSGBrowser:
 
             self.page.locator("#DTE_Field_assembly").select_option(label=item['assembly'], timeout=5000)
             self.page.locator("#DTE_Field_assembly").dispatch_event("change")
-            time.sleep(0.3)
+            time.sleep(1.0)
 
             if item.get('subassembly'):
                 self._fill_subassembly(item['subassembly'])
 
-            self.page.locator("#DTE_Field_part").fill(item['part'])
-
             if item['makebuy'] == 'm':
                 self.page.locator("#DTE_Field_makebuy_0").check()
+                self.page.locator("#DTE_Field_makebuy_0").dispatch_event("change")
             else:
                 self.page.locator("#DTE_Field_makebuy_1").check()
+                self.page.locator("#DTE_Field_makebuy_1").dispatch_event("change")
 
+            # Checking makebuy can trigger the same kind of async, dependent-field
+            # DOM rebuild that #DTE_Field_type does in create_sub_entries (both are
+            # DTE_Field_* form-config reveals) -- settle before touching anything
+            # below, same 1.5s used after the type select there.
+            time.sleep(1.5)
+
+            # :visible-scoped and filled AFTER the settle, in case the makebuy-driven
+            # rebuild replaced these nodes -- mirrors create_sub_entries.
+            self.page.locator("#DTE_Field_part:visible").fill(item['part'])
             if item['comments']:
-                self.page.locator("#DTE_Field_comments").fill(item['comments'])
+                self.page.locator("#DTE_Field_comments:visible").fill(item['comments'])
             if item['quantity']:
-                self.page.locator("#DTE_Field_quantity").fill(item['quantity'])
+                self.page.locator("#DTE_Field_quantity:visible").fill(item['quantity'])
+
+            # Some System/Assembly combos (e.g. ET / Accumulator) reveal Costs,
+            # Comments (costs), Emissions, and Comments (emissions) directly on
+            # the "Create new entry" form -- these bars only appear for "buy"
+            # items (makebuy != 'm'). Not every buy-item form has them (other
+            # systems use create_sub_entries for cost/emissions data instead).
+            # Their actual field ids differ from the same-looking fields in
+            # create_sub_entries's child-table form (guessing #DTE_Field_costs
+            # here never matched), so find them by label text instead -- if
+            # "Costs" isn't found at all, this form variant doesn't have the
+            # section and there's nothing to fill.
+            if item['makebuy'] != 'm':
+                cost_sel = self._find_field_by_label("Costs")
+                if cost_sel:
+                    if item.get('cost'):
+                        self.page.locator(cost_sel).fill(item['cost'])
+                    cost_comments_sel = self._find_field_by_label("Comments (costs)", timeout=3000)
+                    if cost_comments_sel and item.get('cost_comments'):
+                        self.page.locator(cost_comments_sel).fill(item['cost_comments'])
+                    emissions_sel = self._find_field_by_label("Emissions", timeout=3000)
+                    if emissions_sel and item.get('emissions'):
+                        self.page.locator(emissions_sel).fill(item['emissions'])
+                    emissions_comments_sel = self._find_field_by_label("Comments (emissions)", timeout=3000)
+                    if emissions_comments_sel and item.get('emissions_comments'):
+                        self.page.locator(emissions_comments_sel).fill(item['emissions_comments'])
 
             self.page.get_by_text("Create", exact=True).click()
             self.page.wait_for_selector(".DTE_Action_Create", state="hidden", timeout=10000)
@@ -244,7 +310,7 @@ class FSGBrowser:
         for toggle in self.page.locator("i.toggle-child.fa-folder-open").all():
             try:
                 toggle.click()
-                time.sleep(0.3)
+                time.sleep(1.0)
             except Exception:
                 pass
 
@@ -304,6 +370,6 @@ class FSGBrowser:
             # visible for the next create_part() call.
             try:
                 self.page.locator("i.toggle-child.fa-folder-open").first.click()
-                time.sleep(0.3)
+                time.sleep(1.0)
             except Exception:
                 pass
